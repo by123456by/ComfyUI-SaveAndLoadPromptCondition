@@ -1,5 +1,7 @@
 import os
 import random
+import base64
+import io
 
 import folder_paths
 from PIL import Image
@@ -15,79 +17,75 @@ else:
 folder_paths.folder_names_and_paths["conditionings"] = (current_paths, ".bin")
 
 class SaveConditioning:
-    def __init__(self):
-        self.output_dir = folder_paths.get_output_directory()
-
     @classmethod
     def INPUT_TYPES(s):
         return {"required": 
                     {"conditionings": ("CONDITIONING", ),},
                 }
 
-    RETURN_TYPES = ()
+    RETURN_TYPES = ("STRING",)
     FUNCTION = "save_conditioning"
-    OUTPUT_NODE = True
-    CATEGORY = "endman100"
+    CATEGORY = "SaveCondition"
 
     def save_conditioning(self, conditionings): # conditionings : [[text, {"pooled_output"}]...]
-        results = list()
-        for (batch_number, conditioning) in enumerate(conditionings):
-            save_path = os.path.join(self.output_dir, f"{batch_number:05}_conditionings.bin")
-            print(conditioning)
-            print(f"conditioning[0].shape:{conditioning[0].shape}, save_path:{save_path}")
-            for key, value in conditioning[1].items():
+        # 使用内存缓冲区而不是文件
+        buffer = io.BytesIO()
+        torch.save(conditionings[0], buffer)
+        buffer.seek(0)
+        
+        # 转换为base64编码的字符串
+        encoded_string = base64.b64encode(buffer.getvalue()).decode('utf-8')
+        
+        # 打印一些调试信息
+        conditioning = conditionings[0]
+        print(f"conditioning[0].shape:{conditioning[0].shape}")
+        for key, value in conditioning[1].items():
+            if(type(value) == torch.Tensor):
+                print(f"key:{key}, type:{type(value)}, shape:{value.shape}")
+            else:
+                print(f"key:{key}, type:{type(conditioning[1][key])}")
+
+        if(hasattr(conditioning[0], "addit_embeds")):
+           for key, value in conditioning[0].addit_embeds.items():
                 if(type(value) == torch.Tensor):
                     print(f"key:{key}, type:{type(value)}, shape:{value.shape}")
                 else:
-                    print(f"key:{key}, type:{type(conditioning[1][key])}")
-
-            if(hasattr(conditioning[0], "addit_embeds")):
-               for key, value in conditioning[0].addit_embeds.items():
-                    if(type(value) == torch.Tensor):
-                        print(f"key:{key}, type:{type(value)}, shape:{value.shape}")
-                    else:
-                        print(f"key:{key}, type:{type(value)}")
-
-            torch.save(conditioning, save_path)
-
-        return { "ui": { "conditionings": results } }
+                    print(f"key:{key}, type:{type(value)}")
+                    
+        return (encoded_string,)
 
 class LoadContditioning():
     @classmethod
     def INPUT_TYPES(s):
-        return {"required": { "conditioning": (folder_paths.get_filename_list("conditionings"), )}}
+        return {"required": { "conditioning_string": ("STRING", {"multiline": True})}}
 
-    CATEGORY = "endman100"
+    CATEGORY = "SaveCondition"
     RETURN_TYPES = ("CONDITIONING", )
     FUNCTION = "load_conditioning"
 
-    def load_conditioning(self, conditioning):
-        conditioning_path = folder_paths.get_full_path("conditionings", conditioning)
-        conditioning_list = torch.load(conditioning_path)
-        conditioning_list[0] = conditioning_list[0].cpu()
-        for key, value in conditioning_list[1].items():
-            if(type(value) == torch.Tensor):
-                conditioning_list[1][key] = value.cpu()
-        if(hasattr(conditioning_list[0], "addit_embeds")):
-            for key, value in conditioning_list[0].addit_embeds.items():
+    def load_conditioning(self, conditioning_string):
+        try:
+            # 从base64字符串解码
+            decoded_bytes = base64.b64decode(conditioning_string)
+            buffer = io.BytesIO(decoded_bytes)
+            
+            # 从内存缓冲区加载
+            conditioning_list = torch.load(buffer)
+            
+            # 确保所有张量都在CPU上
+            conditioning_list[0] = conditioning_list[0].cpu()
+            for key, value in conditioning_list[1].items():
                 if(type(value) == torch.Tensor):
-                    conditioning_list[0].addit_embeds[key] = value.cpu()
-        return ([conditioning_list], )
-
-    @classmethod
-    def IS_CHANGED(s, conditioning):
-        conditioning_path = folder_paths.get_full_path("conditionings", conditioning)
-        m = hashlib.sha256()
-        with open(conditioning_path, 'rb') as f:
-            m.update(f.read())
-        return m.digest().hex()
-
-    @classmethod
-    def VALIDATE_INPUTS(s, conditioning):
-        conditioning_path = folder_paths.get_full_path("conditionings", conditioning)
-        if not os.path.exists(conditioning_path):
-            return "Invalid conditioning file: {}".format(conditioning_path)
-        return True
+                    conditioning_list[1][key] = value.cpu()
+            if(hasattr(conditioning_list[0], "addit_embeds")):
+                for key, value in conditioning_list[0].addit_embeds.items():
+                    if(type(value) == torch.Tensor):
+                        conditioning_list[0].addit_embeds[key] = value.cpu()
+            return ([conditioning_list], )
+        except Exception as e:
+            print(f"Error loading conditioning from string: {e}")
+            # 返回一个空的conditioning作为fallback
+            return ([], )
     
 
 NODE_CLASS_MAPPINGS = {
@@ -96,6 +94,6 @@ NODE_CLASS_MAPPINGS = {
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "Save Conditioning": "SaveConditioning",
-    "Load Contditioning": "LoadContditioning"
+    "SaveConditioningAsString": "SaveConditioning",
+    "LoadConditioningFromString": "LoadContditioning"
 }
